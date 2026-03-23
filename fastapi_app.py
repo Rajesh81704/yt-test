@@ -2,10 +2,43 @@ from fastapi import FastAPI, HTTPException
 from pydantic import BaseModel
 from pathlib import Path
 import yt_dlp
+import os
+import random
 
 app = FastAPI(title="YT Format Extractor", version="1.0.0")
 
 COOKIES_PATH = Path(__file__).parent / "cookies.txt"
+
+# ── Proxy config ─────────────────────────────────────────────────────────────
+def _load_proxies() -> list[str]:
+    p = Path(__file__).parent / "proxies.properties"
+    if not p.exists():
+        return []
+    urls = []
+    for line in p.read_text().splitlines():
+        line = line.strip()
+        if not line or line.startswith("#"):
+            continue
+        # Full URL: proxy=http://...
+        if line.startswith("proxy="):
+            urls.append(line.split("=", 1)[1])
+            continue
+        # ip:port:user:pass
+        parts = line.split(":")
+        if len(parts) == 4:
+            ip, port, user, pwd = parts
+            urls.append(f"http://{user}:{pwd}@{ip}:{port}")
+        # ip:port (no auth)
+        elif len(parts) == 2:
+            urls.append(f"http://{line}")
+    return urls
+
+PROXIES = _load_proxies()
+
+def get_proxy() -> str | None:
+    if not PROXIES:
+        return None
+    return random.choice(PROXIES)
 
 
 def find_cookies() -> str | None:
@@ -13,6 +46,19 @@ def find_cookies() -> str | None:
         if p.exists() and p.stat().st_size > 100:
             return str(p)
     return None
+
+
+# ── Bot-detection error keywords ─────────────────────────────────────────────
+_BOT_ERRORS = (
+    "sign in to confirm",
+    "not a bot",
+    "bot detection",
+    "cookies",
+)
+
+def _is_bot_error(msg: str) -> bool:
+    low = msg.lower()
+    return any(k in low for k in _BOT_ERRORS)
 
 
 class VideoRequest(BaseModel):
@@ -42,27 +88,39 @@ class VideoResponse(BaseModel):
     formats: list[FormatInfo]
 
 
-# Exact same ydl_opts as pytest.py
-def get_formats(url: str) -> dict:
+# ── yt-dlp extractor ──────────────────────────────────────────────────────────
+def get_formats_ytdlp(url: str) -> dict:
     ydl_opts = {
         "quiet": True,
         "skip_download": True,
         "extractor_args": {"youtube": {"player_client": ["ios", "android", "web"]}},
         "compat_opts": set(),
+        "socket_timeout": 10,
+        "http_headers": {
+            "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 "
+                          "(KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36"
+        },
     }
     cookies = find_cookies()
     if cookies:
         ydl_opts["cookiefile"] = cookies
 
+    proxy = get_proxy()
+    if proxy:
+        safe = proxy.split("@")[-1]
+        print(f"[proxy] Using: {safe}", flush=True)
+        ydl_opts["proxy"] = proxy
+    else:
+        print("[proxy] No proxy configured", flush=True)
+
     with yt_dlp.YoutubeDL(ydl_opts) as ydl:
         info = ydl.extract_info(url, download=False)
 
-    formats = [
-        f for f in info["formats"]
-        if f.get("url")
-    ]
-
-    formats = sorted(formats, key=lambda x: x.get("height") or 0, reverse=True)
+    formats = sorted(
+        [f for f in info["formats"] if f.get("url")],
+        key=lambda x: x.get("height") or 0,
+        reverse=True,
+    )
 
     return {
         "title": info.get("title"),
@@ -89,16 +147,44 @@ def get_formats(url: str) -> dict:
     }
 
 
-@app.post("/formats", response_model=VideoResponse, summary="Get MP4 formats with audio")
-def formats(body: VideoRequest):
+# ── Browser extractor (fallback) ──────────────────────────────────────────────
+async def get_formats_browser(url: str) -> dict:
+    import asyncio
+    from browser_extractor import extract_formats_browser
+    print("[browser] Falling back to Playwright browser extractor", flush=True)
+    # Run in a fresh event loop thread to avoid conflicts with uvicorn workers
+    result = await asyncio.get_event_loop().run_in_executor(
+        None, lambda: asyncio.run(extract_formats_browser(url))
+    )
+    result.setdefault("note", "High-res formats (720p+) are video-only. Pair with an audio-only format and merge on the client.")
+    return result
+
+
+# ── Unified endpoint ──────────────────────────────────────────────────────────
+@app.post("/formats", response_model=VideoResponse, summary="Get video formats")
+async def formats(body: VideoRequest):
     url = body.url.strip()
     if not url:
         raise HTTPException(status_code=400, detail="Missing 'url'")
+
+    # 1. Try yt-dlp first (fast)
     try:
-        return get_formats(url)
+        return get_formats_ytdlp(url)
     except yt_dlp.utils.DownloadError as e:
-        raise HTTPException(status_code=400, detail=str(e))
+        err = str(e)
+        if _is_bot_error(err):
+            print(f"[yt-dlp] Bot detection hit, switching to browser extractor", flush=True)
+        else:
+            raise HTTPException(status_code=400, detail=err)
     except Exception as e:
         import traceback
         traceback.print_exc()
         raise HTTPException(status_code=500, detail=str(e))
+
+    # 2. Fallback: Playwright browser
+    try:
+        return await get_formats_browser(url)
+    except Exception as e:
+        import traceback
+        traceback.print_exc()
+        raise HTTPException(status_code=502, detail=f"Both extractors failed. Browser error: {e}")
