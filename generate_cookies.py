@@ -10,6 +10,7 @@ Install:
 
 import asyncio
 import sys
+import os
 from pathlib import Path
 from playwright.async_api import async_playwright
 
@@ -82,9 +83,10 @@ async def login_and_export(email: str, password: str):
 
 
 def main():
-    print("=== YouTube Headless Cookie Generator ===\n")
-    email = input("Google email: ").strip()
-    password = input("Password: ").strip()
+    from dotenv import load_dotenv
+    load_dotenv()
+    email = os.environ.get("GOOGLE_EMAIL") or input("Google email: ").strip()
+    password = os.environ.get("GOOGLE_PASSWORD") or input("Password: ").strip()
 
     if not email or not password:
         print("Email and password are required.")
