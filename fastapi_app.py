@@ -48,6 +48,7 @@ def get_formats(url: str) -> dict:
         "quiet": True,
         "skip_download": True,
         "extractor_args": {"youtube": {"player_client": ["ios", "android", "web"]}},
+        "compat_opts": set(),
     }
     cookies = find_cookies()
     if cookies:
