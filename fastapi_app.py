@@ -1,8 +1,18 @@
 from fastapi import FastAPI, HTTPException
 from pydantic import BaseModel
+from pathlib import Path
 import yt_dlp
 
 app = FastAPI(title="YT Format Extractor", version="1.0.0")
+
+COOKIES_PATH = Path(__file__).parent / "cookies.txt"
+
+
+def find_cookies() -> str | None:
+    for p in (COOKIES_PATH, Path.home() / "cookies.txt"):
+        if p.exists() and p.stat().st_size > 100:
+            return str(p)
+    return None
 
 
 class VideoRequest(BaseModel):
@@ -38,6 +48,9 @@ def get_formats(url: str) -> dict:
         "quiet": True,
         "skip_download": True
     }
+    cookies = find_cookies()
+    if cookies:
+        ydl_opts["cookiefile"] = cookies
 
     with yt_dlp.YoutubeDL(ydl_opts) as ydl:
         info = ydl.extract_info(url, download=False)
