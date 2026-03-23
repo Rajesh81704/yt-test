@@ -46,7 +46,8 @@ class VideoResponse(BaseModel):
 def get_formats(url: str) -> dict:
     ydl_opts = {
         "quiet": True,
-        "skip_download": True
+        "skip_download": True,
+        "extractor_args": {"youtube": {"player_client": ["ios", "android", "web"]}},
     }
     cookies = find_cookies()
     if cookies:
