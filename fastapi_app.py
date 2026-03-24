@@ -1,4 +1,6 @@
+import httpx
 from fastapi import FastAPI, HTTPException
+from fastapi.responses import StreamingResponse
 from pydantic import BaseModel
 from pathlib import Path
 import yt_dlp
@@ -54,6 +56,8 @@ _BOT_ERRORS = (
     "not a bot",
     "bot detection",
     "cookies",
+    "429",
+    "too many requests",
 )
 
 def _is_bot_error(msg: str) -> bool:
@@ -85,6 +89,8 @@ class FormatInfo(BaseModel):
 class VideoResponse(BaseModel):
     title: str | None
     note: str
+    extractor: str  # "yt-dlp" or "browser"
+    download_headers: dict | None = None
     formats: list[FormatInfo]
 
 
@@ -93,7 +99,7 @@ def get_formats_ytdlp(url: str) -> dict:
     ydl_opts = {
         "quiet": True,
         "skip_download": True,
-        "extractor_args": {"youtube": {"player_client": ["ios", "android", "web"]}},
+        "extractor_args": {"youtube": {"player_client": ["mweb", "ios", "android", "web"]}},
         "compat_opts": set(),
         "socket_timeout": 10,
         "http_headers": {
@@ -125,6 +131,7 @@ def get_formats_ytdlp(url: str) -> dict:
     return {
         "title": info.get("title"),
         "note": "High-res formats (720p+) are video-only. Pair with an audio-only format and merge on the client.",
+        "extractor": "yt-dlp",
         "formats": [
             {
                 "format_id":       f.get("format_id"),
@@ -150,13 +157,27 @@ def get_formats_ytdlp(url: str) -> dict:
 # ── Browser extractor (fallback) ──────────────────────────────────────────────
 async def get_formats_browser(url: str) -> dict:
     import asyncio
+    import concurrent.futures
     from browser_extractor import extract_formats_browser
     print("[browser] Falling back to Playwright browser extractor", flush=True)
-    # Run in a fresh event loop thread to avoid conflicts with uvicorn workers
-    result = await asyncio.get_event_loop().run_in_executor(
-        None, lambda: asyncio.run(extract_formats_browser(url))
-    )
+
+    def _run():
+        import sys
+        loop = asyncio.new_event_loop()
+        # Playwright requires ProactorEventLoop on Windows for subprocess support
+        if sys.platform == "win32":
+            loop = asyncio.ProactorEventLoop()
+        asyncio.set_event_loop(loop)
+        try:
+            return loop.run_until_complete(extract_formats_browser(url))
+        finally:
+            loop.close()
+
+    with concurrent.futures.ThreadPoolExecutor(max_workers=1) as pool:
+        result = await asyncio.get_event_loop().run_in_executor(pool, _run)
+
     result.setdefault("note", "High-res formats (720p+) are video-only. Pair with an audio-only format and merge on the client.")
+    result["extractor"] = "browser"
     return result
 
 
@@ -188,3 +209,49 @@ async def formats(body: VideoRequest):
         import traceback
         traceback.print_exc()
         raise HTTPException(status_code=502, detail=f"Both extractors failed. Browser error: {e}")
+
+
+class ProxyDownloadRequest(BaseModel):
+    url: str
+    headers: dict | None = None
+
+
+@app.post("/proxy-download", summary="Proxy a stream URL through the server")
+async def proxy_download(body: ProxyDownloadRequest):
+    """
+    Fetches the video/audio stream server-side and pipes it to the client.
+    Use this when the stream URL requires session-bound cookies/headers.
+    Pass the `download_headers` from /formats response as `headers`.
+    """
+    default_headers = {
+        "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 "
+                      "(KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36",
+        "Referer": "https://www.youtube.com/",
+        "Origin": "https://www.youtube.com",
+    }
+    req_headers = {**default_headers, **(body.headers or {})}
+
+    client = httpx.AsyncClient(follow_redirects=True, timeout=30)
+    req = client.build_request("GET", body.url, headers=req_headers)
+    response = await client.send(req, stream=True)
+
+    if response.status_code != 200:
+        await client.aclose()
+        raise HTTPException(status_code=response.status_code, detail="Stream fetch failed")
+
+    content_type = response.headers.get("content-type", "video/mp4")
+    content_length = response.headers.get("content-length")
+
+    resp_headers = {"Content-Type": content_type}
+    if content_length:
+        resp_headers["Content-Length"] = content_length
+
+    async def stream_chunks():
+        try:
+            async for chunk in response.aiter_bytes(chunk_size=65536):
+                yield chunk
+        finally:
+            await response.aclose()
+            await client.aclose()
+
+    return StreamingResponse(stream_chunks(), headers=resp_headers)

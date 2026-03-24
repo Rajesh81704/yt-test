@@ -61,6 +61,10 @@ async def extract_formats_browser(url: str) -> dict:
         title = await page.title()
         title = title.replace(" - YouTube", "").strip()
 
+        # Capture cookies for client-side download auth
+        raw_cookies = await context.cookies()
+        cookie_header = "; ".join(f"{c['name']}={c['value']}" for c in raw_cookies if "youtube" in c.get("domain","") or "google" in c.get("domain",""))
+
         await browser.close()
 
     if not player_data:
@@ -80,11 +84,18 @@ async def extract_formats_browser(url: str) -> dict:
         formats.append(_parse_format(f, has_video=True, has_audio=True))
 
     for f in streaming.get("adaptiveFormats", []):
-        has_video = f.get("mimeType", "").startswith("video/")
-        has_audio = f.get("mimeType", "").startswith("audio/")
+        mime = f.get("mimeType", "")
+        if not mime.startswith("video/") and not mime.startswith("audio/"):
+            continue  # skip storyboards, images, etc.
+        has_video = mime.startswith("video/")
+        has_audio = mime.startswith("audio/")
         formats.append(_parse_format(f, has_video=has_video, has_audio=has_audio))
 
-    formats = sorted(formats, key=lambda x: x.get("height") or 0, reverse=True)
+    formats = sorted(
+        [f for f in formats if f.get("download_url")],
+        key=lambda x: x.get("height") or 0,
+        reverse=True,
+    )
 
     return {
         "title": video_details.get("title") or title,
@@ -93,6 +104,12 @@ async def extract_formats_browser(url: str) -> dict:
         "uploader": video_details.get("author"),
         "view_count": int(video_details.get("viewCount", 0)),
         "note": "High-res formats (720p+) are video-only. Pair with audio-only and merge on client.",
+        "download_headers": {
+            "Cookie": cookie_header,
+            "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36",
+            "Referer": "https://www.youtube.com/",
+            "Origin": "https://www.youtube.com",
+        },
         "formats": formats,
     }
 
