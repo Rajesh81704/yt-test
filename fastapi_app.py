@@ -1,17 +1,27 @@
-import httpx
 from fastapi import FastAPI, HTTPException
-from fastapi.responses import StreamingResponse
+from fastapi.staticfiles import StaticFiles
+from fastapi.responses import FileResponse
+from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel
 from pathlib import Path
 import yt_dlp
-import os
 import random
+import asyncio
+from concurrent.futures import ThreadPoolExecutor
 
-app = FastAPI(title="YT Format Extractor", version="1.0.0")
+app = FastAPI(title="Video Format Extractor", version="1.0.0")
+app.add_middleware(CORSMiddleware, allow_origins=["*"], allow_methods=["*"], allow_headers=["*"])
+app.mount("/static", StaticFiles(directory="static"), name="static")
+
+@app.get("/", response_class=FileResponse)
+async def index():
+    return "static/index.html"
 
 COOKIES_PATH = Path(__file__).parent / "cookies.txt"
+_executor = ThreadPoolExecutor(max_workers=8)
 
-# ── Proxy config ─────────────────────────────────────────────────────────────
+
+# ── Proxy config ──────────────────────────────────────────────────────────────
 def _load_proxies() -> list[str]:
     p = Path(__file__).parent / "proxies.properties"
     if not p.exists():
@@ -21,16 +31,13 @@ def _load_proxies() -> list[str]:
         line = line.strip()
         if not line or line.startswith("#"):
             continue
-        # Full URL: proxy=http://...
         if line.startswith("proxy="):
             urls.append(line.split("=", 1)[1])
             continue
-        # ip:port:user:pass
         parts = line.split(":")
         if len(parts) == 4:
             ip, port, user, pwd = parts
             urls.append(f"http://{user}:{pwd}@{ip}:{port}")
-        # ip:port (no auth)
         elif len(parts) == 2:
             urls.append(f"http://{line}")
     return urls
@@ -38,9 +45,7 @@ def _load_proxies() -> list[str]:
 PROXIES = _load_proxies()
 
 def get_proxy() -> str | None:
-    if not PROXIES:
-        return None
-    return random.choice(PROXIES)
+    return random.choice(PROXIES) if PROXIES else None
 
 
 def find_cookies() -> str | None:
@@ -50,21 +55,13 @@ def find_cookies() -> str | None:
     return None
 
 
-# ── Bot-detection error keywords ─────────────────────────────────────────────
-_BOT_ERRORS = (
-    "sign in to confirm",
-    "not a bot",
-    "bot detection",
-    "cookies",
-    "429",
-    "too many requests",
-)
-
-def _is_bot_error(msg: str) -> bool:
-    low = msg.lower()
-    return any(k in low for k in _BOT_ERRORS)
+def _get_note(url: str) -> str:
+    if "youtube.com" in url or "youtu.be" in url:
+        return "High-res formats (720p+) are video-only. Pair with an audio-only format and merge on the client."
+    return "Some formats may be video-only or audio-only. Merge on the client if needed."
 
 
+# ── Models ────────────────────────────────────────────────────────────────────
 class VideoRequest(BaseModel):
     url: str
 
@@ -89,48 +86,50 @@ class FormatInfo(BaseModel):
 class VideoResponse(BaseModel):
     title: str | None
     note: str
-    extractor: str  # "yt-dlp" or "browser"
-    download_headers: dict | None = None
+    extractor: str
     formats: list[FormatInfo]
 
 
 # ── yt-dlp extractor ──────────────────────────────────────────────────────────
-def get_formats_ytdlp(url: str) -> dict:
+def _extract(url: str, proxy: str | None) -> dict:
     ydl_opts = {
         "quiet": True,
         "skip_download": True,
-        "extractor_args": {"youtube": {"player_client": ["mweb", "ios", "android", "web"]}},
-        "compat_opts": set(),
-        "socket_timeout": 10,
+        "format": "bestvideo*+bestaudio*/best",
+        "extractor_args": {
+            "youtube": {
+                "player_client": ["android_vr", "web_safari"],
+            }
+        },
+        "socket_timeout": 15,
         "http_headers": {
-            "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 "
-                          "(KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36"
+            "User-Agent": "Mozilla/5.0 (Linux; Android 12; Pixel 6) AppleWebKit/537.36 "
+                          "(KHTML, like Gecko) Chrome/120.0.0.0 Mobile Safari/537.36"
         },
     }
+
     cookies = find_cookies()
     if cookies:
         ydl_opts["cookiefile"] = cookies
 
-    proxy = get_proxy()
     if proxy:
-        safe = proxy.split("@")[-1]
-        print(f"[proxy] Using: {safe}", flush=True)
         ydl_opts["proxy"] = proxy
+        print(f"[proxy] {proxy.split('@')[-1]}", flush=True)
     else:
-        print("[proxy] No proxy configured", flush=True)
+        print("[proxy] none", flush=True)
 
     with yt_dlp.YoutubeDL(ydl_opts) as ydl:
         info = ydl.extract_info(url, download=False)
 
     formats = sorted(
-        [f for f in info["formats"] if f.get("url")],
-        key=lambda x: x.get("height") or 0,
+        [f for f in info.get("formats", []) if f.get("url")],
+        key=lambda x: (x.get("height") or 0, x.get("abr") or 0),
         reverse=True,
     )
 
     return {
         "title": info.get("title"),
-        "note": "High-res formats (720p+) are video-only. Pair with an audio-only format and merge on the client.",
+        "note": _get_note(url),
         "extractor": "yt-dlp",
         "formats": [
             {
@@ -154,104 +153,38 @@ def get_formats_ytdlp(url: str) -> dict:
     }
 
 
-# ── Browser extractor (fallback) ──────────────────────────────────────────────
-async def get_formats_browser(url: str) -> dict:
-    import asyncio
-    import concurrent.futures
-    from browser_extractor import extract_formats_browser
-    print("[browser] Falling back to Playwright browser extractor", flush=True)
-
-    def _run():
-        import sys
-        loop = asyncio.new_event_loop()
-        # Playwright requires ProactorEventLoop on Windows for subprocess support
-        if sys.platform == "win32":
-            loop = asyncio.ProactorEventLoop()
-        asyncio.set_event_loop(loop)
+def get_formats_ytdlp(url: str, max_retries: int = 3) -> dict:
+    last_err = None
+    tried: set = set()
+    for _ in range(max_retries):
+        proxy = get_proxy()
+        while proxy in tried and len(tried) < len(PROXIES):
+            proxy = get_proxy()
+        tried.add(proxy)
         try:
-            return loop.run_until_complete(extract_formats_browser(url))
-        finally:
-            loop.close()
+            return _extract(url, proxy)
+        except Exception as e:
+            msg = str(e).lower()
+            if any(k in msg for k in ("remotedisconnected", "connection", "proxy", "timeout", "ssl")):
+                print(f"[proxy] failed ({proxy.split('@')[-1] if proxy else 'none'}): {e}", flush=True)
+                last_err = e
+                continue
+            raise
+    raise last_err
 
-    with concurrent.futures.ThreadPoolExecutor(max_workers=1) as pool:
-        result = await asyncio.get_event_loop().run_in_executor(pool, _run)
 
-    result.setdefault("note", "High-res formats (720p+) are video-only. Pair with an audio-only format and merge on the client.")
-    result["extractor"] = "browser"
-    return result
-
-
-# ── Unified endpoint ──────────────────────────────────────────────────────────
+# ── Endpoint ──────────────────────────────────────────────────────────────────
 @app.post("/formats", response_model=VideoResponse, summary="Get video formats")
 async def formats(body: VideoRequest):
     url = body.url.strip()
     if not url:
         raise HTTPException(status_code=400, detail="Missing 'url'")
-
-    # 1. Try yt-dlp first (fast)
     try:
-        return get_formats_ytdlp(url)
+        loop = asyncio.get_event_loop()
+        return await loop.run_in_executor(_executor, get_formats_ytdlp, url)
     except yt_dlp.utils.DownloadError as e:
-        err = str(e)
-        if _is_bot_error(err):
-            print(f"[yt-dlp] Bot detection hit, switching to browser extractor", flush=True)
-        else:
-            raise HTTPException(status_code=400, detail=err)
+        raise HTTPException(status_code=400, detail=str(e))
     except Exception as e:
         import traceback
         traceback.print_exc()
         raise HTTPException(status_code=500, detail=str(e))
-
-    # 2. Fallback: Playwright browser
-    try:
-        return await get_formats_browser(url)
-    except Exception as e:
-        import traceback
-        traceback.print_exc()
-        raise HTTPException(status_code=502, detail=f"Both extractors failed. Browser error: {e}")
-
-
-class ProxyDownloadRequest(BaseModel):
-    url: str
-    headers: dict | None = None
-
-
-@app.post("/proxy-download", summary="Proxy a stream URL through the server")
-async def proxy_download(body: ProxyDownloadRequest):
-    """
-    Fetches the video/audio stream server-side and pipes it to the client.
-    Use this when the stream URL requires session-bound cookies/headers.
-    Pass the `download_headers` from /formats response as `headers`.
-    """
-    default_headers = {
-        "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 "
-                      "(KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36",
-        "Referer": "https://www.youtube.com/",
-        "Origin": "https://www.youtube.com",
-    }
-    req_headers = {**default_headers, **(body.headers or {})}
-
-    client = httpx.AsyncClient(follow_redirects=True, timeout=30)
-    req = client.build_request("GET", body.url, headers=req_headers)
-    response = await client.send(req, stream=True)
-
-    if response.status_code != 200:
-        await client.aclose()
-        raise HTTPException(status_code=response.status_code, detail="Stream fetch failed")
-
-    content_type = response.headers.get("content-type", "video/mp4")
-    content_length = response.headers.get("content-length")
-
-    resp_headers = {"Content-Type": content_type}
-    if content_length:
-        resp_headers["Content-Length"] = content_length
-
-    async def stream_chunks():
-        try:
-            async for chunk in response.aiter_bytes(chunk_size=65536):
-                yield chunk
-        finally:
-            await response.aclose()
-            await client.aclose()
-
-    return StreamingResponse(stream_chunks(), headers=resp_headers)
