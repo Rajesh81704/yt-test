@@ -1,29 +1,26 @@
 from fastapi import FastAPI, HTTPException
-from fastapi.staticfiles import StaticFiles
-from fastapi.responses import FileResponse
 from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel
 from pathlib import Path
 import yt_dlp
 import random
 import asyncio
+import os
 from concurrent.futures import ThreadPoolExecutor
 
 app = FastAPI(title="Video Format Extractor", version="1.0.0")
 app.add_middleware(CORSMiddleware, allow_origins=["*"], allow_methods=["*"], allow_headers=["*"])
-app.mount("/static", StaticFiles(directory="static"), name="static")
 
-@app.get("/", response_class=FileResponse)
-async def index():
-    return "static/index.html"
-
-COOKIES_PATH = Path(__file__).parent / "cookies.txt"
 _executor = ThreadPoolExecutor(max_workers=8)
 
 
 # ── Proxy config ──────────────────────────────────────────────────────────────
 def _load_proxies() -> list[str]:
-    p = Path(__file__).parent / "proxies.properties"
+    # On Vercel: set PROXIES env var as comma-separated proxy URLs
+    env_proxies = os.environ.get("PROXIES", "")
+    if env_proxies:
+        return [p.strip() for p in env_proxies.split(",") if p.strip()]
+    p = Path(__file__).parent.parent / "proxies.properties"
     if not p.exists():
         return []
     urls = []
@@ -46,13 +43,6 @@ PROXIES = _load_proxies()
 
 def get_proxy() -> str | None:
     return random.choice(PROXIES) if PROXIES else None
-
-
-def find_cookies() -> str | None:
-    for p in (COOKIES_PATH, Path.home() / "cookies.txt"):
-        if p.exists() and p.stat().st_size > 100:
-            return str(p)
-    return None
 
 
 def _get_note(url: str) -> str:
@@ -108,15 +98,8 @@ def _extract(url: str, proxy: str | None) -> dict:
         },
     }
 
-    cookies = find_cookies()
-    if cookies:
-        ydl_opts["cookiefile"] = cookies
-
     if proxy:
         ydl_opts["proxy"] = proxy
-        print(f"[proxy] {proxy.split('@')[-1]}", flush=True)
-    else:
-        print("[proxy] none", flush=True)
 
     with yt_dlp.YoutubeDL(ydl_opts) as ydl:
         info = ydl.extract_info(url, download=False)
@@ -166,7 +149,6 @@ def get_formats_ytdlp(url: str, max_retries: int = 3) -> dict:
         except Exception as e:
             msg = str(e).lower()
             if any(k in msg for k in ("remotedisconnected", "connection", "proxy", "timeout", "ssl")):
-                print(f"[proxy] failed ({proxy.split('@')[-1] if proxy else 'none'}): {e}", flush=True)
                 last_err = e
                 continue
             raise
@@ -174,7 +156,7 @@ def get_formats_ytdlp(url: str, max_retries: int = 3) -> dict:
 
 
 # ── Endpoint ──────────────────────────────────────────────────────────────────
-@app.post("/formats", response_model=VideoResponse, summary="Get video formats")
+@app.post("/formats", response_model=VideoResponse)
 async def formats(body: VideoRequest):
     url = body.url.strip()
     if not url:
