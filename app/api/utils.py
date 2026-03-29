@@ -48,10 +48,14 @@ def has_video(f: dict) -> bool:
 
 
 def has_audio(f: dict, strict: bool = False) -> bool:
-    """strict=True: only trust acodec field (used for YouTube)."""
+    """strict=True: only trust acodec field (used for YouTube).
+    In all cases, explicit acodec='none' means no audio."""
+    acodec = f.get("acodec")
+    if acodec == "none":
+        return False
     if strict:
-        return bool(f.get("acodec") and f.get("acodec") != "none")
-    return bool(f.get("acodec") and f.get("acodec") != "none") or f.get("abr") is not None
+        return bool(acodec)
+    return bool(acodec) or f.get("abr") is not None
 
 
 def fmt_entry(f: dict, extra: dict = {}, strict_audio: bool = False) -> dict:

@@ -13,8 +13,9 @@ YDL_OPTS = {
     "skip_download": True,
     "socket_timeout": 15,
     "http_headers": {
-        "User-Agent": "Mozilla/5.0 (iPhone; CPU iPhone OS 17_0 like Mac OS X) "
-                      "AppleWebKit/605.1.15 (KHTML, like Gecko) Version/17.0 Mobile/15E148 Safari/604.1"
+        "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 "
+                      "(KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36",
+        "Accept-Language": "en-US,en;q=0.9",
     },
 }
 
@@ -61,6 +62,8 @@ async def fb_formats(body: VideoRequest):
     url = body.url.strip()
     if not url:
         raise HTTPException(status_code=400, detail="Missing 'url'")
+    if not url.startswith("https://") and not url.startswith("http://"):
+        raise HTTPException(status_code=400, detail="URL must start with http:// or https://")
     if not any(d in url for d in FB_DOMAINS):
         raise HTTPException(status_code=400, detail="URL must be a Facebook link")
     try:
