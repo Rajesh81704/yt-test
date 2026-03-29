@@ -9,22 +9,21 @@ import random
 import asyncio
 from concurrent.futures import ThreadPoolExecutor
 
-app = FastAPI(title="Video Format Extractor", version="1.0.0")
-app.add_middleware(CORSMiddleware, allow_origins=["*"], allow_methods=["*"], allow_headers=["*"])
-app.mount("/static", StaticFiles(directory="static"), name="static")
-
-@app.get("/", response_class=FileResponse)
-async def index():
-    return "static/index.html"
-
 COOKIES_PATH = Path(__file__).parent / "cookies.txt"
 _executor = ThreadPoolExecutor(max_workers=8)
 
 
 # ── Proxy config ──────────────────────────────────────────────────────────────
 def _load_proxies() -> list[str]:
-    p = Path(__file__).parent / "proxies.properties"
-    if not p.exists():
+    # Walk up from app/api/ to find proxies.properties at the project root
+    p = Path(__file__).parent
+    for _ in range(3):
+        candidate = p / "proxies.properties"
+        if candidate.exists():
+            p = candidate
+            break
+        p = p.parent
+    else:
         return []
     urls = []
     for line in p.read_text().splitlines():
@@ -43,6 +42,15 @@ def _load_proxies() -> list[str]:
     return urls
 
 PROXIES = _load_proxies()
+
+# ── App ───────────────────────────────────────────────────────────────────────
+app = FastAPI(title="Video Formats API")
+app.add_middleware(
+    CORSMiddleware,
+    allow_origins=["*"],
+    allow_methods=["*"],
+    allow_headers=["*"],
+)
 
 def get_proxy() -> str | None:
     return random.choice(PROXIES) if PROXIES else None
