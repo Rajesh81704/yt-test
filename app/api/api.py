@@ -152,8 +152,8 @@ def _extract(url: str, proxy: str | None) -> dict:
                 "acodec":          f.get("acodec"),
                 "filesize":        f.get("filesize"),
                 "filesize_approx": f.get("filesize_approx"),
-                "has_video":       f.get("vcodec") not in (None, "none"),
-                "has_audio":       f.get("acodec") not in (None, "none"),
+                "has_video":       bool(f.get("vcodec") and f.get("vcodec") != "none") or f.get("width") is not None,
+                "has_audio":       bool(f.get("acodec") and f.get("acodec") != "none") or f.get("abr") is not None,
                 "download_url":    f.get("url"),
             }
             for f in formats
