@@ -78,9 +78,23 @@ def get_proxy() -> str | None:
 
 
 def find_cookies() -> str | None:
+    import os, shutil, tempfile
+    tmp_cookies = Path(tempfile.gettempdir()) / "cookies.txt"
+    env_cookies = os.getenv("YOUTUBE_COOKIES") or os.getenv("COOKIES_TEXT")
+    if env_cookies:
+        try:
+            tmp_cookies.write_text(env_cookies, encoding="utf-8")
+            return str(tmp_cookies)
+        except Exception:
+            pass
+
     for p in (COOKIES_PATH, Path.home() / "cookies.txt"):
         if p.exists() and p.stat().st_size > 100:
-            return str(p)
+            try:
+                shutil.copyfile(p, tmp_cookies)
+                return str(tmp_cookies)
+            except Exception:
+                return str(p)
     return None
 
 
