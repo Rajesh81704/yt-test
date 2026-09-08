@@ -1,21 +1,39 @@
 from fastapi import FastAPI, HTTPException
-from fastapi.staticfiles import StaticFiles
-from fastapi.responses import FileResponse
 from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel
 from pathlib import Path
 import yt_dlp
 import random
 import asyncio
+import shutil
 from concurrent.futures import ThreadPoolExecutor
+
+
+# ── JS runtime helper ─────────────────────────────────────────────────────────
+def _js_runtimes() -> dict:
+    """Return a js_runtimes config dict if node or deno is available on PATH."""
+    for runtime in ("node", "deno"):
+        path = shutil.which(runtime)
+        if path:
+            return {runtime: {"path": path}}
+    return {}
+
 
 COOKIES_PATH = Path(__file__).parent / "cookies.txt"
 _executor = ThreadPoolExecutor(max_workers=8)
 
+# Keywords that indicate a retryable proxy / network issue
+_RETRYABLE = (
+    "remotedisconnected", "connection", "proxy", "timeout", "ssl",
+    "429", "too many requests",        # rate-limited proxy
+    "sign in to confirm", "bot",       # proxy IP flagged by YouTube
+    "http error 4",                    # generic 4xx from proxy
+)
+
 
 # ── Proxy config ──────────────────────────────────────────────────────────────
 def _load_proxies() -> list[str]:
-    # Walk up from app/api/ to find proxies.properties at the project root
+    """Walk up from app/api/ to find proxies.properties at the project root."""
     p = Path(__file__).parent
     for _ in range(3):
         candidate = p / "proxies.properties"
@@ -41,7 +59,9 @@ def _load_proxies() -> list[str]:
             urls.append(f"http://{line}")
     return urls
 
+
 PROXIES = _load_proxies()
+
 
 # ── App ───────────────────────────────────────────────────────────────────────
 app = FastAPI(title="Video Formats API")
@@ -51,6 +71,7 @@ app.add_middleware(
     allow_methods=["*"],
     allow_headers=["*"],
 )
+
 
 def get_proxy() -> str | None:
     return random.choice(PROXIES) if PROXIES else None
@@ -103,16 +124,20 @@ def _extract(url: str, proxy: str | None) -> dict:
     ydl_opts = {
         "quiet": True,
         "skip_download": True,
+        "noplaylist": True,
         "format": "bestvideo*+bestaudio*/best",
+        # visionos client: returns full HTTPS format list without PO token, works without login
         "extractor_args": {
             "youtube": {
-                "player_client": ["android_vr", "web_safari"],
+                "player_client": ["visionos"],
             }
         },
-        "socket_timeout": 15,
+        "js_runtimes": _js_runtimes(),
+        "socket_timeout": 10,
         "http_headers": {
-            "User-Agent": "Mozilla/5.0 (Linux; Android 12; Pixel 6) AppleWebKit/537.36 "
-                          "(KHTML, like Gecko) Chrome/120.0.0.0 Mobile Safari/537.36"
+            "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) "
+                          "AppleWebKit/537.36 (KHTML, like Gecko) "
+                          "Chrome/125.0.0.0 Safari/537.36"
         },
     }
 
@@ -162,9 +187,20 @@ def _extract(url: str, proxy: str | None) -> dict:
 
 
 def get_formats_ytdlp(url: str, max_retries: int = 3) -> dict:
+    # Step 1: Try direct connection (no proxy) first to prevent proxy-IP binding 403 Forbidden errors
+    try:
+        print("[proxy] trying direct connection first...", flush=True)
+        return _extract(url, None)
+    except Exception as e:
+        msg = str(e).lower()
+        if not any(k in msg for k in _RETRYABLE):
+            raise
+        print(f"[proxy] direct connection failed ({e}) — falling back to proxies...", flush=True)
+
+    # Step 2: Fallback to rotating proxies if direct connection was blocked
     last_err = None
     tried: set = set()
-    for _ in range(max_retries):
+    for attempt in range(max_retries):
         proxy = get_proxy()
         while proxy in tried and len(tried) < len(PROXIES):
             proxy = get_proxy()
@@ -173,12 +209,13 @@ def get_formats_ytdlp(url: str, max_retries: int = 3) -> dict:
             return _extract(url, proxy)
         except Exception as e:
             msg = str(e).lower()
-            if any(k in msg for k in ("remotedisconnected", "connection", "proxy", "timeout", "ssl")):
-                print(f"[proxy] failed ({proxy.split('@')[-1] if proxy else 'none'}): {e}", flush=True)
+            if any(k in msg for k in _RETRYABLE):
+                print(f"[proxy] retryable error on attempt {attempt + 1}: {e}", flush=True)
                 last_err = e
                 continue
             raise
-    raise last_err
+
+    raise last_err or Exception("All direct and proxy extraction attempts failed")
 
 
 # ── Endpoint ──────────────────────────────────────────────────────────────────
