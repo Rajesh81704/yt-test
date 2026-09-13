@@ -23,10 +23,10 @@ YDL_OPTS = {
     "quiet": True,
     "skip_download": True,
     "noplaylist": True,
-    # visionos client: returns full HTTPS format list without PO token, works without login
-    "extractor_args": {"youtube": {"player_client": ["visionos"]}},
+    # player_client fallback list for maximum reliability without login or PO token
+    "extractor_args": {"youtube": {"player_client": ["tv", "ios", "android", "web"]}},
     "js_runtimes": _js_runtimes(),
-    "socket_timeout": 10,
+    "socket_timeout": 15,
     "http_headers": {
         "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) "
                       "AppleWebKit/537.36 (KHTML, like Gecko) "

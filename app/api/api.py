@@ -140,10 +140,9 @@ def _extract(url: str, proxy: str | None) -> dict:
         "skip_download": True,
         "noplaylist": True,
         "format": "bestvideo*+bestaudio*/best",
-        # visionos client: returns full HTTPS format list without PO token, works without login
         "extractor_args": {
             "youtube": {
-                "player_client": ["visionos"],
+                "player_client": ["tv", "ios", "android", "web"],
             }
         },
         "js_runtimes": _js_runtimes(),

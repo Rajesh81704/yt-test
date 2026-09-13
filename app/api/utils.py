@@ -3,6 +3,14 @@ import random
 
 
 def load_proxies() -> list[str]:
+    import os
+
+    # 1. Check environment variables first
+    env_proxies = os.getenv("PROXIES_LIST") or os.getenv("PROXY_URL")
+    if env_proxies:
+        return [p.strip() for p in env_proxies.split(",") if p.strip()]
+
+    # 2. Check proxies.properties file
     p = Path(__file__).parent
     for _ in range(3):
         candidate = p / "proxies.properties"
@@ -96,19 +104,16 @@ def fmt_entry(f: dict, extra: dict = {}, strict_audio: bool = False) -> dict:
 def extract_with_retry(url: str, ydl_opts: dict, max_retries: int = 3) -> dict:
     import yt_dlp
 
-    # Keywords that indicate a retryable network / proxy issue
     _RETRYABLE = (
         "remotedisconnected", "connection", "proxy", "timeout", "ssl",
         "429", "too many requests",            # rate-limited proxy
         "sign in to confirm", "bot",           # proxy IP flagged by YouTube
-        "http error 4",                        # generic 4xx from proxy
+        "http error 429", "http error 403",
     )
 
     cookies = find_cookies()
 
     # Step 1: Try direct connection (no proxy) first.
-    # Direct connection generates signed URLs bound to the caller's server IP
-    # rather than a third-party proxy IP (which causes HTTP 403 Forbidden in end-user browsers).
     opts = {**ydl_opts}
     opts.pop("proxy", None)
     if cookies:
@@ -119,9 +124,9 @@ def extract_with_retry(url: str, ydl_opts: dict, max_retries: int = 3) -> dict:
             return ydl.extract_info(url, download=False)
     except Exception as e:
         msg = str(e).lower()
-        if not any(k in msg for k in _RETRYABLE):
-            raise  # Non-retryable error — propagate immediately
-        print(f"[proxy] direct connection failed ({e}) — falling back to proxies...", flush=True)
+        print(f"[proxy] direct connection failed ({e}) — checking proxy availability...", flush=True)
+        if not PROXIES:
+            raise
 
     # Step 2: Fallback to rotating proxies if direct connection was blocked/rate-limited
     last_err = None
@@ -129,14 +134,17 @@ def extract_with_retry(url: str, ydl_opts: dict, max_retries: int = 3) -> dict:
 
     for attempt in range(max_retries):
         proxy = get_proxy()
+        if not proxy:
+            break
         while proxy in tried and len(tried) < len(PROXIES):
             proxy = get_proxy()
+        if proxy in tried:
+            break
         tried.add(proxy)
 
         opts = {**ydl_opts}
-        if proxy:
-            opts["proxy"] = proxy
-            print(f"[proxy] attempt {attempt + 1}: {proxy.split('@')[-1]}", flush=True)
+        opts["proxy"] = proxy
+        print(f"[proxy] attempt {attempt + 1}: {proxy.split('@')[-1]}", flush=True)
         if cookies:
             opts["cookiefile"] = cookies
 
@@ -145,6 +153,12 @@ def extract_with_retry(url: str, ydl_opts: dict, max_retries: int = 3) -> dict:
                 return ydl.extract_info(url, download=False)
         except Exception as e:
             msg = str(e).lower()
+            if "402" in msg or "payment required" in msg:
+                print(f"[proxy] Proxy returned 402 Payment Required (expired proxy account) - removing proxy {proxy.split('@')[-1]}", flush=True)
+                if proxy in PROXIES:
+                    PROXIES.remove(proxy)
+                last_err = e
+                continue
             if any(k in msg for k in _RETRYABLE):
                 print(f"[proxy] retryable error on proxy attempt {attempt + 1}: {e}", flush=True)
                 last_err = e
