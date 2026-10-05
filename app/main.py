@@ -44,18 +44,15 @@ class FormatRequest(BaseModel):
 
 
 @app.get("/")
-async def root():
+async def root(request: Request):
     return {
         "status": "ok",
-        "message": "Video Formats API is running",
-        "endpoints": {
-            "health": "/health",
-            "unified_formats": "POST /formats",
-            "youtube_formats": "POST /social/yt/formats",
-            "instagram_formats": "POST /social/insta/formats",
-            "facebook_formats": "POST /social/fb/formats",
-        },
+        "scope_path": request.scope.get("path"),
+        "raw_path": request.scope.get("raw_path", b"").decode("utf-8", errors="ignore"),
+        "headers": dict(request.headers),
+        "query_string": request.scope.get("query_string", b"").decode("utf-8", errors="ignore"),
     }
+
 
 
 @app.get("/health")
