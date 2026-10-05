@@ -20,9 +20,28 @@ app = FastAPI(
 
 app.add_middleware(CORSMiddleware, allow_origins=["*"], allow_methods=["*"], allow_headers=["*"])
 
+
+@app.middleware("http")
+async def vercel_path_fix(request: Request, call_next):
+    scope_path = request.scope.get("path", "")
+    matched_path = request.headers.get("x-matched-path", "")
+    real_path = matched_path if matched_path else scope_path
+
+    for prefix in ("/api/index.py", "/api/index", "/api"):
+        if real_path.startswith(prefix):
+            new_path = real_path[len(prefix):]
+            if not new_path or not new_path.startswith("/"):
+                new_path = "/" + new_path
+            request.scope["path"] = new_path
+            break
+
+    return await call_next(request)
+
+
 app.include_router(yt_router)
 app.include_router(insta_router)
 app.include_router(fb_router)
+
 
 
 class FormatRequest(BaseModel):
