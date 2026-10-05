@@ -1,4 +1,4 @@
-from fastapi import FastAPI, HTTPException
+from fastapi import FastAPI, HTTPException, Request
 from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel
 import asyncio
@@ -10,8 +10,29 @@ from app.api.fb import router as fb_router, _get_formats as get_fb_formats, FB_D
 
 _executor = ThreadPoolExecutor(max_workers=8)
 
-app = FastAPI(title="Video Formats API", description="API to extract video formats for YouTube, Instagram, and Facebook")
+app = FastAPI(
+    title="Video Formats API",
+    description="API to extract video formats for YouTube, Instagram, and Facebook",
+    docs_url="/docs",
+    redoc_url="/redoc",
+    openapi_url="/openapi.json",
+)
+
 app.add_middleware(CORSMiddleware, allow_origins=["*"], allow_methods=["*"], allow_headers=["*"])
+
+
+@app.middleware("http")
+async def fix_path_middleware(request: Request, call_next):
+    path = request.scope.get("path", "")
+    for prefix in ("/api/index.py", "/api/index", "/api"):
+        if path.startswith(prefix) and len(path) > len(prefix) and path[len(prefix)] == "/":
+            request.scope["path"] = path[len(prefix):]
+            break
+        elif path == prefix:
+            request.scope["path"] = "/"
+            break
+    return await call_next(request)
+
 
 app.include_router(yt_router)
 app.include_router(insta_router)
