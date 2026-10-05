@@ -30,19 +30,23 @@ app.add_middleware(CORSMiddleware, allow_origins=["*"], allow_methods=["*"], all
 
 @app.middleware("http")
 async def vercel_path_fix(request: Request, call_next):
-    scope_path = request.scope.get("path", "")
-    matched_path = request.headers.get("x-matched-path", "")
-    real_path = matched_path if matched_path else scope_path
-
-    for prefix in ("/api/index.py", "/api/index", "/api"):
-        if real_path.startswith(prefix):
-            new_path = real_path[len(prefix):]
-            if not new_path or not new_path.startswith("/"):
-                new_path = "/" + new_path
-            request.scope["path"] = new_path
-            break
+    # Vercel sends the original requested path in x-forwarded-uri
+    forwarded_uri = request.headers.get("x-forwarded-uri") or request.headers.get("x-invoke-path")
+    if forwarded_uri:
+        path_only = forwarded_uri.split("?")[0]
+        request.scope["path"] = path_only
+    else:
+        scope_path = request.scope.get("path", "")
+        for prefix in ("/api/index.py", "/api/index", "/api"):
+            if scope_path.startswith(prefix) and len(scope_path) > len(prefix) and scope_path[len(prefix)] == "/":
+                request.scope["path"] = scope_path[len(prefix):]
+                break
+            elif scope_path == prefix:
+                request.scope["path"] = "/"
+                break
 
     return await call_next(request)
+
 
 
 app.include_router(yt_router)
