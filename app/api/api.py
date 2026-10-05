@@ -142,7 +142,7 @@ def _extract(url: str, proxy: str | None) -> dict:
         "format": "bestvideo*+bestaudio*/best",
         "extractor_args": {
             "youtube": {
-                "player_client": ["tv", "ios", "android", "web"],
+                "player_client": ["ios", "android", "web", "mweb"],
             }
         },
         "js_runtimes": _js_runtimes(),

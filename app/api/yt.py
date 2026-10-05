@@ -24,7 +24,7 @@ YDL_OPTS = {
     "skip_download": True,
     "noplaylist": True,
     # player_client fallback list for maximum reliability without login or PO token
-    "extractor_args": {"youtube": {"player_client": ["tv", "ios", "android", "web"]}},
+    "extractor_args": {"youtube": {"player_client": ["ios", "android", "web", "mweb"]}},
     "js_runtimes": _js_runtimes(),
     "socket_timeout": 15,
     "http_headers": {
