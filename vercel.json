@@ -2,11 +2,12 @@
   "version": 2,
   "rewrites": [
     {
-      "source": "/:path*",
-      "destination": "/api/index.py?path=:path*"
+      "source": "/(.*)",
+      "destination": "/api/index.py"
     }
   ]
 }
+
 
 
 
