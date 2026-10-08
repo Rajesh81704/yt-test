@@ -1,4 +1,4 @@
-from fastapi import FastAPI, HTTPException, Request
+from fastapi import FastAPI, HTTPException
 from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel
 import asyncio
@@ -13,6 +13,7 @@ _executor = ThreadPoolExecutor(max_workers=8)
 app = FastAPI(
     title="Video Formats API",
     description="API to extract video formats for YouTube, Instagram, and Facebook",
+    version="1.0.0",
     docs_url="/docs",
     redoc_url="/redoc",
     openapi_url="/openapi.json",
@@ -20,26 +21,9 @@ app = FastAPI(
 
 app.add_middleware(CORSMiddleware, allow_origins=["*"], allow_methods=["*"], allow_headers=["*"])
 
-
-@app.middleware("http")
-async def vercel_path_fix(request: Request, call_next):
-    scope_path = request.scope.get("path", "")
-    for prefix in ("/api/index.py", "/api/index", "/api"):
-        if scope_path.startswith(prefix):
-            remainder = scope_path[len(prefix):]
-            request.scope["path"] = remainder if remainder else "/"
-            break
-    return await call_next(request)
-
-
-
-
-
-
 app.include_router(yt_router)
 app.include_router(insta_router)
 app.include_router(fb_router)
-
 
 
 class FormatRequest(BaseModel):
@@ -53,6 +37,8 @@ async def root():
         "message": "Video Formats API is running",
         "endpoints": {
             "docs": "/docs",
+            "redoc": "/redoc",
+            "openapi": "/openapi.json",
             "health": "/health",
             "unified_formats": "POST /formats",
             "youtube_formats": "POST /social/yt/formats",
@@ -84,6 +70,8 @@ async def unified_formats(body: FormatRequest):
             return await loop.run_in_executor(_executor, get_yt_formats, url)
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
+
+
 
 
 
