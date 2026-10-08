@@ -1,10 +1,10 @@
 {
   "version": 2,
   "rewrites": [
-    { "source": "/docs", "destination": "/api/index" },
-    { "source": "/redoc", "destination": "/api/index" },
-    { "source": "/openapi.json", "destination": "/api/index" },
-    { "source": "/api/(.*)", "destination": "/api/index" },
-    { "source": "/(.*)", "destination": "/api/index" }
+    { "source": "/docs", "destination": "/api/index?path=/docs" },
+    { "source": "/redoc", "destination": "/api/index?path=/redoc" },
+    { "source": "/openapi.json", "destination": "/api/index?path=/openapi.json" },
+    { "source": "/api/(.*)", "destination": "/api/index?path=/api/$1" },
+    { "source": "/(.*)", "destination": "/api/index?path=/$1" }
   ]
 }
