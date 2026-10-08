@@ -30,22 +30,25 @@ app.add_middleware(CORSMiddleware, allow_origins=["*"], allow_methods=["*"], all
 
 @app.middleware("http")
 async def vercel_path_fix(request: Request, call_next):
-    # Vercel sends the original requested path in x-forwarded-uri
-    forwarded_uri = request.headers.get("x-forwarded-uri") or request.headers.get("x-invoke-path")
-    if forwarded_uri:
-        path_only = forwarded_uri.split("?")[0]
-        request.scope["path"] = path_only
+    path_param = request.query_params.get("path")
+    if path_param is not None:
+        request.scope["path"] = "/" + path_param.lstrip("/")
     else:
-        scope_path = request.scope.get("path", "")
-        for prefix in ("/api/index.py", "/api/index", "/api"):
-            if scope_path.startswith(prefix) and len(scope_path) > len(prefix) and scope_path[len(prefix)] == "/":
-                request.scope["path"] = scope_path[len(prefix):]
-                break
-            elif scope_path == prefix:
-                request.scope["path"] = "/"
-                break
+        forwarded_uri = request.headers.get("x-forwarded-uri") or request.headers.get("x-invoke-path")
+        if forwarded_uri:
+            request.scope["path"] = forwarded_uri.split("?")[0]
+        else:
+            scope_path = request.scope.get("path", "")
+            for prefix in ("/api/index.py", "/api/index", "/api"):
+                if scope_path.startswith(prefix) and len(scope_path) > len(prefix) and scope_path[len(prefix)] == "/":
+                    request.scope["path"] = scope_path[len(prefix):]
+                    break
+                elif scope_path == prefix:
+                    request.scope["path"] = "/"
+                    break
 
     return await call_next(request)
+
 
 
 
